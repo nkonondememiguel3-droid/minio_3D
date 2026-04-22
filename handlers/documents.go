@@ -202,3 +202,54 @@ func (h *DocumentHandler) RegisterWebhook(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, hook)
 }
+
+// ListPages returns all extracted pages with fresh presigned URLs in one call.
+// This is the primary endpoint for external backend-to-backend consumers.
+//
+// GET /documents/:id/pages/all
+func (h *DocumentHandler) ListPages(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	docID := c.Param("id")
+
+	pages, err := h.svc.ListPages(c.Request.Context(), docID, userID)
+	if err != nil {
+		switch {
+		case errors.Is(err, storage.ErrNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "document not found"})
+		case errors.Is(err, service.ErrDocumentNotReady):
+			c.JSON(http.StatusConflict, gin.H{
+				"error":  "document is still processing",
+				"status": "processing",
+			})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"document_id": docID,
+		"count":       len(pages),
+		"pages":       pages,
+	})
+}
+
+// DeleteDocument removes a document and all its extracted pages.
+//
+// DELETE /documents/:id
+func (h *DocumentHandler) DeleteDocument(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	docID := c.Param("id")
+
+	err := h.svc.DeleteDocument(c.Request.Context(), docID, userID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "document not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "document deleted"})
+}

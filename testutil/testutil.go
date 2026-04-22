@@ -2,8 +2,8 @@
 package testutil
 
 import (
-	"context"
 	"fmt"
+	"context"
 	"io"
 	"sync"
 	"time"
@@ -11,7 +11,7 @@ import (
 	"miniio_s3/storage"
 )
 
-// Mock Storage
+// ─── Mock Storage ─────────────────────────────────────────────────────────────
 
 // MockStorage is an in-memory implementation of storage.Storage for tests.
 type MockStorage struct {
@@ -19,9 +19,9 @@ type MockStorage struct {
 	objects map[string][]byte
 
 	// Hooks let individual tests inject failures.
-	UploadErr     error
-	GetPresignErr error
-	DeleteErr     error
+	UploadErr      error
+	GetPresignErr  error
+	DeleteErr      error
 }
 
 // NewMockStorage returns a ready-to-use MockStorage.
@@ -82,15 +82,15 @@ func (m *MockStorage) Has(key string) bool {
 	return ok
 }
 
-// Mock MetadataStore
+// ─── Mock MetadataStore ───────────────────────────────────────────────────────
 
 // MockMeta is a minimal in-memory stand-in for storage.MetadataStore.
 // It tracks files and users for handler/service tests that must not touch Postgres.
 type MockMeta struct {
-	mu     sync.RWMutex
-	users  map[string]*storage.User     // keyed by id
-	files  map[string]*storage.FileMeta // keyed by id
-	byHash map[string]*storage.FileMeta // keyed by sha256
+	mu    sync.RWMutex
+	users map[string]*storage.User        // keyed by id
+	files map[string]*storage.FileMeta    // keyed by id
+	byHash map[string]*storage.FileMeta   // keyed by sha256
 
 	// Hooks
 	SaveErr   error
@@ -233,7 +233,7 @@ func (m *MockMeta) GetUserByEmail(email string) (*storage.User, error) {
 	return nil, storage.ErrNotFound
 }
 
-// Mock DocumentStore
+// ─── Mock DocumentStore ───────────────────────────────────────────────────────
 
 // MockDocStore is an in-memory DocumentRepository for service/handler tests.
 type MockDocStore struct {
@@ -243,11 +243,11 @@ type MockDocStore struct {
 	webhooks map[string][]storage.WebhookSubscription
 
 	// Hooks for injecting failures
-	CreateErr     error
-	GetErr        error
-	UpdatePathErr error
-	MarkFailedErr error
-	SavePageErr   error
+	CreateErr      error
+	GetErr         error
+	UpdatePathErr  error
+	MarkFailedErr  error
+	SavePageErr    error
 }
 
 // NewMockDocStore returns a ready-to-use MockDocStore.
@@ -452,12 +452,12 @@ func (m *MockDocStore) SetReady(docID string, pageCount int) {
 	}
 }
 
-// Mock TaskEnqueuer
+// ─── Mock TaskEnqueuer ────────────────────────────────────────────────────────
 
 // MockEnqueuer records enqueued tasks and can inject errors.
 type MockEnqueuer struct {
-	mu         sync.Mutex
-	Tasks      []EnqueuedTask
+	mu      sync.Mutex
+	Tasks   []EnqueuedTask
 	EnqueueErr error
 }
 
@@ -488,4 +488,18 @@ func (m *MockEnqueuer) Count() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.Tasks)
+}
+
+// DeleteDocument satisfies the updated DocumentRepository interface.
+func (m *MockDocStore) DeleteDocument(id, userID string) (*storage.Document, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.docs[id]
+	if !ok || d.UserID != userID {
+		return nil, storage.ErrNotFound
+	}
+	cp := *d
+	delete(m.docs, id)
+	delete(m.pages, id)
+	return &cp, nil
 }

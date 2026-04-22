@@ -10,7 +10,7 @@ services:
       POSTGRES_PASSWORD: storagepass
       POSTGRES_DB: storagedb
     ports:
-      - "5433:5432"
+      - "5435:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -19,27 +19,27 @@ services:
       timeout: 5s
       retries: 10
 
-  # Redis (Asynq task queue)
+  # Redis
   redis:
     image: redis:7-alpine
     container_name: storage_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  # MinIO (S3 like service)
+  # MinIO
   minio:
     image: quay.io/minio/minio
     container_name: storage_minio
     restart: unless-stopped
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # web console
+      - "9000:9000"
+      - "9001:9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -60,11 +60,10 @@ services:
     container_name: storage_api
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8083:8080"
     environment:
       PORT: "8080"
 
-      # PostgreSQL
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_USER: storageuser
@@ -72,25 +71,24 @@ services:
       DB_NAME: storagedb
       DB_SSLMODE: disable
 
-      # MinIO
       STORAGE_ENDPOINT: minio:9000
       STORAGE_ACCESS_KEY: minioadmin
       STORAGE_SECRET_KEY: minioadmin
       STORAGE_BUCKET: documents
       STORAGE_USE_SSL: "false"
 
-      # Redis
       REDIS_ADDR: redis:6379
       REDIS_PASSWORD: ""
       WORKER_CONCURRENCY: "10"
 
-      # Auth
       JWT_SECRET: "change-me-in-production"
       JWT_EXPIRY_HOURS: "24"
-      PRESIGNED_URL_MINUTES: "15"
+      PRESIGNED_URL_MINUTES: "60"        # 1 hour for backend consumers
 
-      # Quotas
-      DEFAULT_QUOTA_BYTES: "10737418240"   # 10 GB
+      DEFAULT_QUOTA_BYTES: "10737418240" # 10 GB
+
+      PROCESSING_TIMEOUT_MINUTES: "30"
+      RATE_LIMIT_UPLOADS_PER_MINUTE: "10"
 
       GIN_MODE: release
     depends_on:
@@ -98,6 +96,21 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Asynq dashboard (asynqmon)
+  # Web UI for monitoring the task queue.
+  # Access at http://localhost:8082
+  asynqmon:
+    image: hibiken/asynqmon
+    container_name: storage_asynqmon
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+    environment:
+      REDIS_ADDR: redis:6379
+    depends_on:
       redis:
         condition: service_healthy
 

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -214,4 +215,43 @@ func (s *DocumentStore) UpdateOriginalPath(docID, path string) error {
 		return fmt.Errorf("update original path: %w", err)
 	}
 	return nil
+}
+
+// DeleteDocument removes a document and all its pages (CASCADE handles DB rows).
+// The caller is responsible for deleting the MinIO objects separately.
+func (s *DocumentStore) DeleteDocument(id, userID string) (*Document, error) {
+	const q = `
+		DELETE FROM documents
+		WHERE id = $1 AND user_id = $2
+		RETURNING id, user_id, filename, original_minio_path, sha256,
+		          status, total_pages, error_message, size_bytes, created_at, updated_at`
+
+	var d Document
+	if err := s.db.QueryRowx(q, id, userID).StructScan(&d); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("delete document: %w", err)
+	}
+	return &d, nil
+}
+
+// FailStuckDocuments marks documents that have been in "processing" longer
+// than the cutoff as "failed". Returns the number of rows updated.
+// Called by the watchdog on a regular interval.
+func (s *DocumentStore) FailStuckDocuments(cutoff time.Time) (int, error) {
+	const q = `
+		UPDATE documents
+		SET status        = 'failed',
+		    error_message = 'processing timeout: worker did not complete in time',
+		    updated_at    = NOW()
+		WHERE status     = 'processing'
+		  AND created_at < $1`
+
+	res, err := s.db.Exec(q, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("fail stuck documents: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }

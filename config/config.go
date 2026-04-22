@@ -6,6 +6,8 @@ import (
 	"strconv"
 )
 
+// Config holds all application configuration loaded from environment variables.
+// Every field has a sensible default for local development.
 type Config struct {
 	// Server
 	Port string
@@ -26,8 +28,8 @@ type Config struct {
 	StorageUseSSL    bool
 
 	// Auth
-	JWTSecret           string
-	JWTExpiryHours      int
+	JWTSecret          string
+	JWTExpiryHours     int
 	PresignedURLMinutes int
 
 	// Quotas
@@ -38,7 +40,15 @@ type Config struct {
 	RedisPassword string
 
 	// Worker
-	WorkerConcurrency int
+	WorkerConcurrency        int
+	ProcessingTimeoutMinutes int // documents stuck in "processing" longer than this are marked failed
+
+	// Rate limiting
+	RateLimitUploadsPerMinute int // max document uploads per user per minute (0 = disabled)
+
+	// Asynq web dashboard
+	AsynqDashboardEnabled bool
+	AsynqDashboardPort    string
 }
 
 // Load reads configuration from environment variables with fallback defaults.
@@ -68,7 +78,13 @@ func Load() (*Config, error) {
 		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
 
-		WorkerConcurrency: getEnvInt("WORKER_CONCURRENCY", 10),
+		WorkerConcurrency:        getEnvInt("WORKER_CONCURRENCY", 10),
+		ProcessingTimeoutMinutes: getEnvInt("PROCESSING_TIMEOUT_MINUTES", 30),
+
+		RateLimitUploadsPerMinute: getEnvInt("RATE_LIMIT_UPLOADS_PER_MINUTE", 10),
+
+		AsynqDashboardEnabled: getEnvBool("ASYNQ_DASHBOARD_ENABLED", true),
+		AsynqDashboardPort:    getEnv("ASYNQ_DASHBOARD_PORT", "8081"),
 	}
 
 	if cfg.JWTSecret == "change-me-in-production" {

@@ -22,11 +22,13 @@ import (
 )
 
 func main() {
+	// ── Config ────────────────────────────────────────────────────────────────
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
 
+	// ── Database ──────────────────────────────────────────────────────────────
 	database, err := db.Connect(cfg.DSN())
 	if err != nil {
 		log.Fatalf("database: %v", err)
@@ -34,7 +36,7 @@ func main() {
 	defer database.Close()
 	log.Println("[INFO] database connected and migrations applied")
 
-	// Object Storage
+	// ── Object Storage ────────────────────────────────────────────────────────
 	minioStore, err := storage.NewMinIOStorage(
 		cfg.StorageEndpoint,
 		cfg.StorageAccessKey,
@@ -48,25 +50,32 @@ func main() {
 	}
 	log.Printf("[INFO] storage connected (bucket: %s)", cfg.StorageBucket)
 
-	// Metadata stores
-	metaStore := storage.NewMetadataStore(database)
-	docStore := storage.NewDocumentStore(database)
+	// ── Stores ────────────────────────────────────────────────────────────────
+	metaStore   := storage.NewMetadataStore(database)
+	docStore    := storage.NewDocumentStore(database)
+	apiKeyStore := storage.NewAPIKeyStore(database)
 
-	// Asynq client (task queue)
+	// ── Asynq client ──────────────────────────────────────────────────────────
 	asynqClient := worker.NewClient(cfg.RedisAddr, cfg.RedisPassword)
 	defer asynqClient.Close()
 
-	// Service layer
-	fileSvc := service.New(minioStore, metaStore)
+	// ── Services ──────────────────────────────────────────────────────────────
+	fileSvc  := service.New(minioStore, metaStore)
 	enqueuer := service.NewAsynqEnqueuer(asynqClient)
-	docSvc := service.NewDocumentService(minioStore, docStore, enqueuer)
+	docSvc   := service.NewDocumentService(minioStore, docStore, enqueuer)
 
-	// HTTP handlers
-	authHandler := handlers.NewAuthHandler(metaStore, cfg.JWTSecret, cfg.JWTExpiryHours, cfg.DefaultQuotaBytes)
-	fileHandler := handlers.NewFileHandler(fileSvc)
-	docHandler := handlers.NewDocumentHandler(docSvc)
+	// ── Middleware ────────────────────────────────────────────────────────────
+	uploadLimiter := middleware.NewRateLimiter(cfg.RateLimitUploadsPerMinute, time.Minute)
+	flexAuth      := middleware.FlexAuth(cfg.JWTSecret, apiKeyStore)
 
-	// Background worker
+	// ── HTTP handlers ─────────────────────────────────────────────────────────
+	authHandler   := handlers.NewAuthHandler(metaStore, cfg.JWTSecret, cfg.JWTExpiryHours, cfg.DefaultQuotaBytes)
+	apiKeyHandler := handlers.NewAPIKeyHandler(apiKeyStore)
+	fileHandler   := handlers.NewFileHandler(fileSvc)
+	docHandler    := handlers.NewDocumentHandler(docSvc)
+	userHandler   := handlers.NewUserHandler(metaStore, docStore)
+
+	// ── Background: worker ────────────────────────────────────────────────────
 	processor := worker.NewProcessor(minioStore, docStore, asynqClient)
 	go worker.StartWorker(worker.ServerConfig{
 		RedisAddr:     cfg.RedisAddr,
@@ -74,7 +83,17 @@ func main() {
 		Concurrency:   cfg.WorkerConcurrency,
 	}, processor)
 
-	// Router
+	// ── Background: watchdog ──────────────────────────────────────────────────
+	watchdogCtx, watchdogCancel := context.WithCancel(context.Background())
+	defer watchdogCancel()
+	watchdog := worker.NewWatchdog(
+		docStore,
+		time.Duration(cfg.ProcessingTimeoutMinutes)*time.Minute,
+		time.Duration(cfg.ProcessingTimeoutMinutes/2)*time.Minute,
+	)
+	go watchdog.Start(watchdogCtx)
+
+	// ── Router ────────────────────────────────────────────────────────────────
 	if os.Getenv("GIN_MODE") == "" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -88,16 +107,32 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	// Auth routes (no JWT required)
+	// ── Auth routes (no auth required to register/login) ──────────────────────
 	auth := r.Group("/auth")
 	{
 		auth.POST("/register", authHandler.Register)
 		auth.POST("/login", authHandler.Login)
+
+		// API key management — requires JWT or existing API key
+		apiKeys := auth.Group("/api-keys")
+		apiKeys.Use(flexAuth)
+		{
+			apiKeys.POST("", apiKeyHandler.Create)
+			apiKeys.GET("", apiKeyHandler.List)
+			apiKeys.DELETE("/:id", apiKeyHandler.Delete)
+		}
 	}
 
-	// Generic file routes (JWT required)
+	// ── User profile ──────────────────────────────────────────────────────────
+	users := r.Group("/users")
+	users.Use(flexAuth)
+	{
+		users.GET("/me", userHandler.Me)
+	}
+
+	// ── Generic file storage routes ───────────────────────────────────────────
 	files := r.Group("/files")
-	files.Use(middleware.Auth(cfg.JWTSecret))
+	files.Use(flexAuth)
 	{
 		files.POST("/upload", fileHandler.Upload)
 		files.GET("", fileHandler.List)
@@ -106,19 +141,26 @@ func main() {
 		files.DELETE("/:id", fileHandler.Delete)
 	}
 
-	// PDF document routes (JWT required)
+	// ── PDF document routes ───────────────────────────────────────────────────
 	docs := r.Group("/documents")
-	docs.Use(middleware.Auth(cfg.JWTSecret))
+	docs.Use(flexAuth)
 	{
-		docs.POST("/upload", docHandler.Upload)
+		// Upload — rate limited separately
+		docs.POST("/upload", uploadLimiter.Limit(), docHandler.Upload)
+
 		docs.GET("", docHandler.ListDocuments)
 		docs.GET("/:id", docHandler.GetDocument)
-		docs.GET("/:id/pages/:page", docHandler.GetPage)
-		docs.GET("/:id/pages", docHandler.GetPageRange)
+		docs.DELETE("/:id", docHandler.DeleteDocument)
+
+		// Page retrieval — primary endpoint for backend consumers
+		docs.GET("/:id/pages/all", docHandler.ListPages)      // all pages + fresh URLs in one call
+		docs.GET("/:id/pages/:page", docHandler.GetPage)      // single page URL
+		docs.GET("/:id/pages", docHandler.GetPageRange)       // ZIP download (start/end params)
+
 		docs.POST("/:id/webhook", docHandler.RegisterWebhook)
 	}
 
-	// Server with graceful shutdown
+	// ── HTTP server with graceful shutdown ────────────────────────────────────
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      r,
@@ -139,6 +181,7 @@ func main() {
 	<-quit
 	log.Println("[INFO] shutting down...")
 
+	watchdogCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

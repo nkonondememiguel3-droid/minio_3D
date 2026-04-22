@@ -34,6 +34,7 @@ type DocumentRepository interface {
 	ListPages(docID string) ([]storage.DocumentPage, error)
 	CreateWebhook(userID, docID, url, secret string) (*storage.WebhookSubscription, error)
 	GetWebhooksForDocument(docID string) ([]storage.WebhookSubscription, error)
+	DeleteDocument(id, userID string) (*storage.Document, error)
 }
 
 // TaskEnqueuer abstracts task enqueueing so tests can avoid a real Redis.
@@ -235,10 +236,79 @@ func (s *DocumentService) RegisterWebhook(ctx context.Context, userID, docID, ur
 	return s.docStore.CreateWebhook(userID, docID, url, secret)
 }
 
+// ListPages returns all pages for a ready document with a fresh presigned URL for each.
+// This is the primary endpoint for external services — one call to get everything.
+func (s *DocumentService) ListPages(ctx context.Context, docID, userID string) ([]PageWithURL, error) {
+	doc, err := s.docStore.GetDocument(docID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if doc.Status != storage.StatusReady {
+		return nil, ErrDocumentNotReady
+	}
+
+	pages, err := s.docStore.ListPages(docID)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]PageWithURL, 0, len(pages))
+	for _, p := range pages {
+		url, err := s.store.GetPresignedURL(ctx, p.MinioPath)
+		if err != nil {
+			return nil, fmt.Errorf("presign page %d: %w", p.PageNumber, err)
+		}
+		result = append(result, PageWithURL{
+			PageNumber: p.PageNumber,
+			SizeBytes:  p.SizeBytes,
+			URL:        url,
+		})
+	}
+	return result, nil
+}
+
+// DeleteDocument removes a document and all extracted pages from both storage and DB.
+func (s *DocumentService) DeleteDocument(ctx context.Context, docID, userID string) error {
+	// Fetch all pages before deleting the DB rows (CASCADE will remove them).
+	pages, err := s.docStore.ListPages(docID)
+	if err != nil {
+		return fmt.Errorf("list pages for delete: %w", err)
+	}
+
+	// Delete the document row — CASCADE removes document_pages rows too.
+	doc, err := s.docStore.DeleteDocument(docID, userID)
+	if err != nil {
+		return err
+	}
+
+	// Delete MinIO objects best-effort — log failures but don't fail the request.
+	go func() {
+		// Original PDF.
+		if err := s.store.Delete(ctx, doc.OriginalMinioPath); err != nil {
+			fmt.Printf("[WARN] delete original %s: %v\n", doc.OriginalMinioPath, err)
+		}
+		// All extracted pages.
+		for _, p := range pages {
+			if err := s.store.Delete(ctx, p.MinioPath); err != nil {
+				fmt.Printf("[WARN] delete page %s: %v\n", p.MinioPath, err)
+			}
+		}
+	}()
+
+	return nil
+}
+
 // ─── sentinel errors ──────────────────────────────────────────────────────────
 
 var ErrDocumentNotReady = fmt.Errorf("document is not ready yet")
 var ErrInvalidPDF = fmt.Errorf("file is not a valid PDF")
+
+// PageWithURL bundles a page record with its fresh presigned URL.
+type PageWithURL struct {
+	PageNumber int    `json:"page"`
+	SizeBytes  int64  `json:"size_bytes"`
+	URL        string `json:"url"`
+}
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 

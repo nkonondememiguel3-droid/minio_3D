@@ -1,15 +1,15 @@
-#  Stage 1: build
+# ── Stage 1: build ────────────────────────────────────────────────────────────
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
-# Copy everything including the vendor directory
+# Copy the entire source including the vendor directory
 COPY . .
 
-# Build offline using vendored deps
+# Build using vendored dependencies — no network access needed
 RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -ldflags="-s -w" -o server .
 
-# Stage 2: runtime
+# ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM golang:1.25-alpine AS runner
 
 WORKDIR /app

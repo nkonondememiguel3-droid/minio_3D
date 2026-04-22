@@ -8,9 +8,6 @@ server
 # MinIO data
 data/
 
-# Go build cache
-vendor/
-
 # IDE
 .idea/
 .vscode/
