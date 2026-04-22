@@ -1,0 +1,17 @@
+# Binaries
+server
+*.exe
+
+# Environment — never commit real secrets
+.env
+
+# MinIO data
+data/
+
+# Go build cache
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
