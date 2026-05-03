@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS files (
 );
 
 -- Global uniqueness on sha256 enforces deduplication across all users.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_files_sha256
+CREATE INDEX IF NOT EXISTS idx_files_sha256
     ON files(sha256)
     WHERE deleted_at IS NULL;
 

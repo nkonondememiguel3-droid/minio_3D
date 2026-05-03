@@ -16,7 +16,7 @@ import (
 	"miniio_s3/worker"
 )
 
-// ─── interfaces ───────────────────────────────────────────────────────────────
+// interfaces
 
 // DocumentRepository is the storage interface the service depends on.
 // Satisfied by *storage.DocumentStore and testutil.MockDocStore.
@@ -283,13 +283,13 @@ func (s *DocumentService) DeleteDocument(ctx context.Context, docID, userID stri
 
 	// Delete MinIO objects best-effort — log failures but don't fail the request.
 	go func() {
-		// Original PDF.
-		if err := s.store.Delete(ctx, doc.OriginalMinioPath); err != nil {
+		bgCtx := context.Background()
+		if err := s.store.Delete(bgCtx, doc.OriginalMinioPath); err != nil {
 			fmt.Printf("[WARN] delete original %s: %v\n", doc.OriginalMinioPath, err)
 		}
 		// All extracted pages.
 		for _, p := range pages {
-			if err := s.store.Delete(ctx, p.MinioPath); err != nil {
+			if err := s.store.Delete(bgCtx, p.MinioPath); err != nil {
 				fmt.Printf("[WARN] delete page %s: %v\n", p.MinioPath, err)
 			}
 		}
@@ -298,7 +298,7 @@ func (s *DocumentService) DeleteDocument(ctx context.Context, docID, userID stri
 	return nil
 }
 
-// ─── sentinel errors ──────────────────────────────────────────────────────────
+// sentinel errors
 
 var ErrDocumentNotReady = fmt.Errorf("document is not ready yet")
 var ErrInvalidPDF = fmt.Errorf("file is not a valid PDF")

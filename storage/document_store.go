@@ -19,10 +19,16 @@ func NewDocumentStore(db *sqlx.DB) *DocumentStore {
 	return &DocumentStore{db: db}
 }
 
-// ─── document operations ──────────────────────────────────────────────────────
+// document operations
 
 // CreateDocument inserts a new document record with status=processing.
 func (s *DocumentStore) CreateDocument(userID, filename, minioPath, sha256 string, sizeBytes int64) (*Document, error) {
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
 	const q = `
 		INSERT INTO documents (user_id, filename, original_minio_path, sha256, size_bytes)
 		VALUES ($1, $2, $3, $4, $5)
@@ -30,8 +36,21 @@ func (s *DocumentStore) CreateDocument(userID, filename, minioPath, sha256 strin
 		          status, total_pages, error_message, size_bytes, created_at, updated_at`
 
 	var d Document
-	if err := s.db.QueryRowx(q, userID, filename, minioPath, sha256, sizeBytes).StructScan(&d); err != nil {
+	if err := tx.QueryRowx(q, userID, filename, minioPath, sha256, sizeBytes).StructScan(&d); err != nil {
 		return nil, fmt.Errorf("create document: %w", err)
+	}
+
+	// Update storage quota usage atomically with the document insert.
+	const updateUsage = `
+		UPDATE users
+		SET storage_bytes_used = storage_bytes_used + $1
+		WHERE id = $2`
+	if _, err := tx.Exec(updateUsage, sizeBytes, userID); err != nil {
+		return nil, fmt.Errorf("update storage usage: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
 	}
 	return &d, nil
 }

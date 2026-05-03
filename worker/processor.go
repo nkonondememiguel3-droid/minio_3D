@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -47,7 +48,7 @@ func NewProcessor(store storage.Storage, docStore *storage.DocumentStore, client
 	return &Processor{store: store, docStore: docStore, client: client}
 }
 
-// ─── ExtractPages handler ─────────────────────────────────────────────────────
+// ExtractPages handler
 
 // HandleExtractPages is the Asynq handler for TypeExtractPages.
 // It downloads the original PDF, splits it page by page, uploads each page,
@@ -64,6 +65,12 @@ func (p *Processor) HandleExtractPages(ctx context.Context, t *asynq.Task) error
 	// ── 1. Fetch document record ──────────────────────────────────────────────
 	doc, err := p.docStore.GetDocumentByID(docID)
 	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			// Document was deleted before the worker picked up the task.
+			// Return nil so Asynq does NOT retry — there is nothing to process.
+			log.Printf("[worker] document %s not found (deleted before processing) — skipping", docID)
+			return nil
+		}
 		return fmt.Errorf("get document %s: %w", docID, err)
 	}
 
@@ -102,8 +109,8 @@ func (p *Processor) HandleExtractPages(ctx context.Context, t *asynq.Task) error
 
 	sem := make(chan struct{}, pageExtractionConcurrency)
 	var (
-		wg      sync.WaitGroup
-		mu      sync.Mutex
+		wg       sync.WaitGroup
+		mu       sync.Mutex
 		firstErr error
 	)
 
