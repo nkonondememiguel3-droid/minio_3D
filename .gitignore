@@ -12,3 +12,5 @@ data/
 .idea/
 .vscode/
 *.swp
+
+test_api.sh

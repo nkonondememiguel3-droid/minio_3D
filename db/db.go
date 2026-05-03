@@ -15,6 +15,7 @@ var migrationFS embed.FS
 func Connect(dsn string) (*sqlx.DB, error) {
 	database, err := sqlx.Connect("postgres", dsn)
 	if err != nil {
+		fmt.Println(database)
 		return nil, fmt.Errorf("db connect: %w", err)
 	}
 

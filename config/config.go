@@ -28,8 +28,8 @@ type Config struct {
 	StorageUseSSL    bool
 
 	// Auth
-	JWTSecret          string
-	JWTExpiryHours     int
+	JWTSecret           string
+	JWTExpiryHours      int
 	PresignedURLMinutes int
 
 	// Quotas
@@ -96,10 +96,12 @@ func Load() (*Config, error) {
 
 // DSN returns a PostgreSQL connection string.
 func (c *Config) DSN() string {
-	return fmt.Sprintf(
+	dsn := fmt.Sprintf(
 		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
 		c.DBHost, c.DBPort, c.DBUser, c.DBPassword, c.DBName, c.DBSSLMode,
 	)
+	fmt.Println(dsn)
+	return dsn
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
